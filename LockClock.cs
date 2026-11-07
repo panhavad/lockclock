@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("LockClock Screensaver")]
 [assembly: System.Reflection.AssemblyProduct("LockClock")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 [assembly: System.Reflection.AssemblyDescription("Full-screen clock screensaver with red night mode and weather")]
 
 namespace LockClock
@@ -40,6 +40,20 @@ namespace LockClock
         public bool TakeOverWinL = false; // Win+L shows the clock; touching it locks
         public bool ShowWeather = true;
         public string WeatherCity = ""; // empty = detect from IP address
+        public string Display = "all"; // "all", "primary", or a device name such as \\.\DISPLAY2
+
+        // Which screen gets the clock. Other screens are covered in black so nothing on them shows while away.
+        public bool ShowsClockOn(Screen screen)
+        {
+            if (Display == "all") return true;
+            if (Display != "primary")
+            {
+                foreach (var s in Screen.AllScreens)
+                    if (string.Equals(s.DeviceName, Display, StringComparison.OrdinalIgnoreCase))
+                        return string.Equals(screen.DeviceName, Display, StringComparison.OrdinalIgnoreCase);
+            }
+            return screen.Primary; // "primary", or the chosen display is no longer connected
+        }
         public int WeatherUnits = 0; // 0 Auto (by region), 1 Celsius, 2 Fahrenheit
 
         // Automatic: Fahrenheit only where it is the local convention (by the weather location's country).
@@ -71,6 +85,8 @@ namespace LockClock
                 s.FontWeight = Clamp(Get(k, "FontWeight", 2), 0, 2);
                 s.ShowWeather = Get(k, "ShowWeather", 1) != 0;
                 s.WeatherCity = (k.GetValue("WeatherCity") as string ?? "").Trim();
+                s.Display = (k.GetValue("Display") as string ?? "all").Trim();
+                if (s.Display.Length == 0) s.Display = "all";
                 s.WeatherUnits = Clamp(Get(k, "WeatherUnits", 0), 0, 2);
                 s.TakeOverWinL = Get(k, "TakeOverWinL", 0) != 0;
             }
@@ -93,6 +109,7 @@ namespace LockClock
                 k.SetValue("FontWeight", FontWeight);
                 k.SetValue("ShowWeather", ShowWeather ? 1 : 0);
                 k.SetValue("WeatherCity", WeatherCity ?? "");
+                k.SetValue("Display", Display ?? "all");
                 k.SetValue("WeatherUnits", WeatherUnits);
                 k.SetValue("TakeOverWinL", TakeOverWinL ? 1 : 0);
             }
@@ -385,6 +402,9 @@ namespace LockClock
         public static DateTime? ForcedTime;
         public double? PreviewNight = ForcedNight;
         public bool TestMode; // full-screen test from the settings app: closes instead of exiting the app
+        public bool Blank;    // black cover for a screen that doesn't show the clock
+        public List<Form> TestGroup; // all screens of one full-screen test close together
+        public static bool ForceBlank; // debug: /blank
 
         public static ClockForm CreateEmbedded(Settings s)
         {
@@ -493,7 +513,12 @@ namespace LockClock
         {
             if (exiting) return;
             if (!force && (DateTime.UtcNow - startedAt).TotalMilliseconds < 1000) return;
-            if (TestMode) { Cursor.Show(); Close(); return; }
+            if (TestMode)
+            {
+                Cursor.Show();
+                foreach (var f in (TestGroup ?? new List<Form> { this }).ToArray()) f.Close();
+                return;
+            }
             exiting = true;
             if (lockOnExit && !LockControl.LockNow())
             {
@@ -523,6 +548,7 @@ namespace LockClock
                 int range = Math.Max(2, Math.Min(ClientSize.Width, ClientSize.Height) / 40);
                 shift = new Point(rng.Next(-range, range + 1), rng.Next(-range, range + 1));
             }
+            if (Blank || ForceBlank) return;
             weather = settings.ShowWeather ? WeatherService.Get(settings) : null;
             string key = TimeText(now) + (settings.ShowSeconds ? ":" + now.Second : "") + "|" + now.Date.Ticks + "|" + Math.Round(NightFactor(now) * 100) + "|" + shift
                 + "|" + (weather != null ? weather.FetchedUtc.Ticks.ToString() : (WeatherService.LastError ?? "-"));
@@ -623,7 +649,7 @@ namespace LockClock
         {
             var g = e.Graphics;
             g.Clear(Color.Black);
-            if (ClientSize.Width < 4 || ClientSize.Height < 4) return;
+            if (Blank || ForceBlank || ClientSize.Width < 4 || ClientSize.Height < 4) return;
             if (layoutSize != ClientSize) ComputeLayout();
 
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -761,8 +787,16 @@ namespace LockClock
         {
             string self = Application.ExecutablePath;
             if (string.Equals(Path.GetFullPath(self), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase)) return;
-            try { File.Copy(self, dest, true); }
-            catch (IOException) { if (!File.Exists(dest)) throw; } // in use: keep the existing copy
+            // The helper may still be exiting and holding the file for a moment, so retry briefly.
+            for (int attempt = 0; ; attempt++)
+            {
+                try { File.Copy(self, dest, true); return; }
+                catch (IOException)
+                {
+                    if (attempt >= 20) { if (!File.Exists(dest)) throw; return; } // still in use: keep the existing copy
+                    Thread.Sleep(250);
+                }
+            }
         }
 
         public static void Install(int timeoutMinutes, bool lockOnResume)
@@ -788,12 +822,29 @@ namespace LockClock
             CreateShortcut(Path.Combine(programs, "Lock with Clock.lnk"), ExePath, "/lock", "Ctrl+Alt+L",
                 "Show the full-screen clock; the PC locks as soon as you touch it");
             CreateShortcut(Path.Combine(programs, "LockClock Settings.lnk"), ExePath, "/c", "", "LockClock settings");
+            using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 1);
             Agent.Configure(agentWasWanted);
+        }
+
+        // Something outside LockClock (e.g. settings sync or device management) can blank the screensaver value.
+        // If the user chose LockClock and the value is now empty, put it back. A different screensaver is left alone.
+        public static bool RestoreIfCleared()
+        {
+            using (var mine = Registry.CurrentUser.OpenSubKey(@"Software\LockClock"))
+                if (mine == null || !(mine.GetValue("ScreensaverWanted") is int) || (int)mine.GetValue("ScreensaverWanted") != 1) return false;
+            using (var k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
+            {
+                if (k == null || !string.IsNullOrEmpty(k.GetValue("SCRNSAVE.EXE") as string) || !File.Exists(ScrPath)) return false;
+                k.SetValue("SCRNSAVE.EXE", ScrPath);
+            }
+            Native.SystemParametersInfo(0x0011, 1, IntPtr.Zero, Update);
+            return true;
         }
 
         public static void Uninstall()
         {
             Agent.Configure(false);
+            using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 0);
             using (var k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
             {
                 var v = k == null ? null : k.GetValue("SCRNSAVE.EXE") as string;
@@ -827,15 +878,268 @@ namespace LockClock
         }
     }
 
+    // Fluent / Power Apps look for the settings window.
+    static class Fluent
+    {
+        public static float K = 1f; // DPI scale
+        public static readonly Color Brand = Color.FromArgb(0x74, 0x27, 0x74);        // Power Apps purple
+        public static readonly Color BrandHover = Color.FromArgb(0x5C, 0x1F, 0x5C);
+        public static readonly Color BrandPressed = Color.FromArgb(0x4A, 0x18, 0x4A);
+        public static readonly Color Page = Color.FromArgb(0xF3, 0xF2, 0xF1);
+        public static readonly Color Card = Color.White;
+        public static readonly Color Stroke = Color.FromArgb(0xE1, 0xDF, 0xDD);
+        public static readonly Color Text = Color.FromArgb(0x32, 0x31, 0x30);
+        public static readonly Color Text2 = Color.FromArgb(0x60, 0x5E, 0x5C);
+        public static readonly Color Hover = Color.FromArgb(0xF3, 0xF2, 0xF1);
+        public static readonly Color Pressed = Color.FromArgb(0xED, 0xEB, 0xE9);
+        static FontFamily iconFamily;
+
+        public static int Px(float v) { return (int)Math.Round(v * K); }
+
+        public static FontFamily IconFamily
+        {
+            get
+            {
+                if (iconFamily == null)
+                {
+                    using (var installed = new InstalledFontCollection())
+                    {
+                        foreach (var name in new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" })
+                            foreach (var fam in installed.Families)
+                                if (fam.Name == name) { iconFamily = fam; return fam; }
+                    }
+                    iconFamily = FontFamily.GenericSansSerif;
+                }
+                return iconFamily;
+            }
+        }
+
+        public static GraphicsPath Round(RectangleF r, float radius)
+        {
+            var p = new GraphicsPath();
+            float d = radius * 2;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        public static void DrawIcon(Graphics g, string glyph, float sizePt, Color color, RectangleF box)
+        {
+            using (var font = new Font(IconFamily, sizePt))
+            using (var br = new SolidBrush(color))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            {
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                g.DrawString(glyph, font, br, box, sf);
+            }
+        }
+    }
+
+    // On/off switch that keeps the CheckBox API (Checked, CheckedChanged).
+    class ToggleSwitch : CheckBox
+    {
+        bool hover;
+
+        public ToggleSwitch()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            AutoSize = true;
+            Cursor = Cursors.Hand;
+        }
+
+        public override Size GetPreferredSize(Size proposed)
+        {
+            var text = TextRenderer.MeasureText(Text, Font);
+            return new Size(Fluent.Px(40) + Fluent.Px(12) + text.Width, Math.Max(Fluent.Px(30), text.Height + Fluent.Px(6)));
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : Fluent.Card);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float w = Fluent.Px(40), h = Fluent.Px(20);
+            var track = new RectangleF(1, (Height - h) / 2f, w - 2, h);
+            using (var path = Fluent.Round(track, h / 2f))
+            {
+                if (Checked)
+                {
+                    using (var br = new SolidBrush(hover ? Fluent.BrandHover : Fluent.Brand)) g.FillPath(br, path);
+                }
+                else
+                {
+                    using (var br = new SolidBrush(Color.White)) g.FillPath(br, path);
+                    using (var pen = new Pen(hover ? Fluent.Text : Fluent.Text2, Math.Max(1f, Fluent.K))) g.DrawPath(pen, path);
+                }
+            }
+            float knob = h - Fluent.Px(8);
+            float kx = Checked ? track.Right - Fluent.Px(4) - knob : track.X + Fluent.Px(4);
+            using (var br = new SolidBrush(Checked ? Color.White : (hover ? Fluent.Text : Fluent.Text2)))
+                g.FillEllipse(br, kx, track.Y + (h - knob) / 2f, knob, knob);
+            var textRect = new Rectangle((int)w + Fluent.Px(12), 0, Width - (int)w - Fluent.Px(12), Height);
+            TextRenderer.DrawText(g, Text, Font, textRect, Enabled ? Fluent.Text : Fluent.Text2,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
+            if (Focused && ShowFocusCues)
+                using (var pen = new Pen(Fluent.Text, 1) { DashStyle = DashStyle.Dot }) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    class WheelRouter : IMessageFilter
+    {
+        readonly ScrollableControl target;
+        readonly int step;
+
+        public WheelRouter(ScrollableControl target, int step) { this.target = target; this.step = step; }
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != 0x020A /* WM_MOUSEWHEEL */ || !target.IsHandleCreated || !target.Visible) return false;
+            if (!target.RectangleToScreen(target.ClientRectangle).Contains(Cursor.Position)) return false;
+            var focused = Control.FromHandle(m.HWnd) as ComboBox;
+            if (focused != null && focused.DroppedDown) return false; // scrolling an open list is fine
+            int delta = (short)((m.WParam.ToInt64() >> 16) & 0xFFFF);
+            int y = -target.AutoScrollPosition.Y - delta * step / 120;
+            target.AutoScrollPosition = new Point(0, Math.Max(0, y));
+            return true;
+        }
+    }
+
+    enum ButtonKind { Primary, Secondary, Command }
+
+    // Flat, rounded Fluent button with an optional icon glyph.
+    class FluentButton : Button
+    {
+        readonly ButtonKind kind;
+        readonly string glyph;
+        bool hover, down;
+
+        public FluentButton(string text, ButtonKind kind, string glyph = null)
+        {
+            this.kind = kind;
+            this.glyph = glyph;
+            Text = text;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            AutoSize = true;
+            Cursor = Cursors.Hand;
+        }
+
+        public override Size GetPreferredSize(Size proposed)
+        {
+            var text = TextRenderer.MeasureText(Text, Font);
+            int icon = glyph != null ? Fluent.Px(26) : 0;
+            int pad = kind == ButtonKind.Command ? Fluent.Px(10) : Fluent.Px(16);
+            return new Size(Math.Max(kind == ButtonKind.Command ? 0 : Fluent.Px(96), pad * 2 + icon + text.Width), kind == ButtonKind.Command ? Fluent.Px(36) : Fluent.Px(32));
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Parent != null ? Parent.BackColor : Fluent.Card);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color back, fore, border;
+            if (kind == ButtonKind.Primary)
+            {
+                back = down ? Fluent.BrandPressed : hover ? Fluent.BrandHover : Fluent.Brand;
+                fore = Color.White; border = back;
+            }
+            else if (kind == ButtonKind.Secondary)
+            {
+                back = down ? Fluent.Pressed : hover ? Fluent.Hover : Color.White;
+                fore = Fluent.Text; border = Color.FromArgb(0xD1, 0xD1, 0xD1);
+            }
+            else
+            {
+                back = down ? Fluent.Pressed : hover ? Fluent.Hover : (Parent != null ? Parent.BackColor : Color.White);
+                fore = Fluent.Text; border = back;
+            }
+            var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (var path = Fluent.Round(r, Fluent.Px(4)))
+            {
+                using (var br = new SolidBrush(back)) g.FillPath(br, path);
+                using (var pen = new Pen(border, 1)) g.DrawPath(pen, path);
+            }
+            int pad = kind == ButtonKind.Command ? Fluent.Px(10) : Fluent.Px(16);
+            var text = TextRenderer.MeasureText(Text, Font);
+            int icon = glyph != null ? Fluent.Px(26) : 0;
+            int x = (Width - (icon + text.Width)) / 2;
+            if (glyph != null)
+                Fluent.DrawIcon(g, glyph, 11f, kind == ButtonKind.Primary ? Color.White : Fluent.Brand, new RectangleF(x, 0, Fluent.Px(20), Height));
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(x + icon, 0, text.Width + 2, Height), fore,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+            if (Focused && ShowFocusCues)
+                using (var pen = new Pen(Fluent.Text, 1) { DashStyle = DashStyle.Dot }) g.DrawRectangle(pen, 2, 2, Width - 5, Height - 5);
+        }
+    }
+
+    // White rounded card with an icon + title, like a Power Apps form section.
+    class Card : Panel
+    {
+        readonly string title, glyph;
+        public readonly TableLayoutPanel Body;
+
+        public Card(string title, string glyph, int width)
+        {
+            this.title = title;
+            this.glyph = glyph;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            BackColor = Fluent.Page;
+            Width = width;
+            Margin = new Padding(0, 0, 0, Fluent.Px(12));
+            Body = new TableLayoutPanel
+            {
+                ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Fluent.Card,
+                Location = new Point(Fluent.Px(20), Fluent.Px(52))
+            };
+            Body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Fluent.Px(180)));
+            Body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width - Fluent.Px(40) - Fluent.Px(180)));
+            Controls.Add(Body);
+            Body.SizeChanged += (o, e) => FitHeight();
+        }
+
+        public void FitHeight() { Height = Body.Bottom + Fluent.Px(18); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Fluent.Page);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (var path = Fluent.Round(r, Fluent.Px(8)))
+            {
+                using (var br = new SolidBrush(Fluent.Card)) g.FillPath(br, path);
+                using (var pen = new Pen(Fluent.Stroke, 1)) g.DrawPath(pen, path);
+            }
+            Fluent.DrawIcon(g, glyph, 13f, Fluent.Brand, new RectangleF(Fluent.Px(16), Fluent.Px(12), Fluent.Px(28), Fluent.Px(28)));
+            using (var font = new Font("Segoe UI Semibold", 12f))
+                TextRenderer.DrawText(g, title, font, new Point(Fluent.Px(50), Fluent.Px(14)), Fluent.Text, Color.Empty);
+        }
+    }
     class SettingsForm : Form
     {
         Settings saved;
         readonly Settings work;
         readonly float k;
-        readonly TableLayoutPanel grid;
+        TableLayoutPanel grid;
+        readonly List<TableLayoutPanel> grids = new List<TableLayoutPanel>();
+        readonly List<Card> cards = new List<Card>();
+        FlowLayoutPanel cardStack;
+        Panel messageBar;
+        Label messageIcon;
         readonly ClockForm preview;
         CheckBox cb24, cbSec, cbDate, cbShift, cbLock, cbWeather, cbWinL, cbSkip;
-        ComboBox cmbMode, cmbFont, cmbPreview, cmbUnits;
+        ComboBox cmbMode, cmbFont, cmbPreview, cmbUnits, cmbDisplay;
+        readonly List<string> displayValues = new List<string>();
         TextBox txtCity;
         readonly System.Windows.Forms.Timer cityDebounce = new System.Windows.Forms.Timer { Interval = 900 };
         DateTimePicker dtStart, dtEnd;
@@ -850,94 +1154,131 @@ namespace LockClock
             work = settings.Clone();
             Text = "LockClock";
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.None;
             using (var g = CreateGraphics()) k = g.DpiX / 96f;
-            Font = new Font("Segoe UI", 9f);
-            AutoSize = true;
-            AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            Padding = new Padding(Px(14));
+            Fluent.K = k;
+            Font = new Font("Segoe UI", 10f);
+            BackColor = Fluent.Page;
+            ForeColor = Fluent.Text;
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
+            ClientSize = new Size(Px(1160), Px(780));
+            MinimumSize = new Size(Px(980), Px(560));
+            KeyPreview = true;
+            KeyDown += (o, e) => { if (e.KeyCode == Keys.Escape) Close(); };
 
-            var root = new TableLayoutPanel { ColumnCount = 2, RowCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-            Controls.Add(root);
+            // Body: preview card on the left, scrolling setting cards on the right.
+            var body = new Panel { Dock = DockStyle.Fill, BackColor = Fluent.Page, Padding = new Padding(Px(20), Px(16), Px(8), Px(8)) };
+            var scroller = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Fluent.Page };
+            cardStack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Fluent.Page, Location = new Point(0, 0), Padding = new Padding(0, 0, Px(12), 0) };
+            scroller.Controls.Add(cardStack);
+            // The mouse wheel scrolls the cards instead of changing whatever dropdown or slider is under the pointer.
+            var wheel = new WheelRouter(scroller, Px(60));
+            Application.AddMessageFilter(wheel);
+            FormClosed += (o, e) => Application.RemoveMessageFilter(wheel);
 
-            // Left: live preview
-            var left = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, Px(18), 0) };
-            var frame = new Panel { Size = new Size(Px(480), Px(270)), BackColor = Color.Black, Margin = new Padding(0), BorderStyle = BorderStyle.FixedSingle };
+            var previewCard = new Card("Live preview", "\uE7F4", Px(520));
+            previewCard.Dock = DockStyle.Left;
+            var frame = new Panel { Size = new Size(Px(480), Px(270)), BackColor = Color.Black, Margin = new Padding(0, 0, 0, Px(12)) };
             preview = ClockForm.CreateEmbedded(work);
             frame.Controls.Add(preview);
             preview.Show();
-            left.Controls.Add(new Label { Text = "Live preview", AutoSize = true, Font = new Font("Segoe UI Semibold", 10f), Margin = new Padding(0, 0, 0, Px(6)) });
-            left.Controls.Add(frame);
-
-            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, Px(8), 0, 0) };
-            row.Controls.Add(new Label { Text = "Show as:", AutoSize = true, Margin = new Padding(0, Px(6), Px(6), 0) });
-            cmbPreview = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Px(150) };
+            previewCard.Body.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, Px(480));
+            previewCard.Body.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, 0);
+            previewCard.Body.Controls.Add(frame);
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Fluent.Card, Margin = new Padding(0) };
+            row.Controls.Add(new Label { Text = "Show as", AutoSize = true, ForeColor = Fluent.Text2, Margin = new Padding(0, Px(7), Px(10), 0) });
+            cmbPreview = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Px(170), BackColor = Color.White };
             cmbPreview.Items.AddRange(new object[] { "Right now", "Daytime", "Night (red)" });
             cmbPreview.SelectedIndex = 0;
             cmbPreview.SelectedIndexChanged += (o, e) => { preview.PreviewNight = PreviewNight(); preview.ReloadSettings(); };
             row.Controls.Add(cmbPreview);
-            var full = new Button { Text = "Try full screen", AutoSize = true, Margin = new Padding(Px(10), 0, 0, 0) };
-            full.Click += (o, e) => ShowFullScreenTest();
-            row.Controls.Add(full);
-            left.Controls.Add(row);
-            root.Controls.Add(left, 0, 0);
+            previewCard.Body.Controls.Add(row);
+            var tip = new Label { Text = "Tip: press Win+L or Ctrl+Alt+L to see it for real.", AutoSize = true, ForeColor = Fluent.Text2, Margin = new Padding(0, Px(14), 0, 0) };
+            previewCard.Body.Controls.Add(tip);
+            var gutter = new Panel { Dock = DockStyle.Left, Width = Px(20), BackColor = Fluent.Page };
+            body.Controls.Add(scroller);
+            body.Controls.Add(gutter);
+            body.Controls.Add(previewCard);
 
-            // Right: options
-            grid = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Px(200)));
-            root.Controls.Add(grid, 1, 0);
-
-            AddHeader("Clock");
+            int cardWidth = Px(560);
+            AddCard("Clock", "\uE823", cardWidth);
             cb24 = AddCheck("24-hour clock", work.Use24h);
             cbSec = AddCheck("Show seconds (small ticking)", work.ShowSeconds);
             cbDate = AddCheck("Show date", work.ShowDate);
             cbShift = AddCheck("Pixel shift (burn-in protection)", work.PixelShift);
             cmbFont = AddCombo("Clock weight", new[] { "Light", "Regular", "Bold" }, work.FontWeight);
-            AddHeader("Night mode");
+            AddDisplayChooser();
+            AddCard("Night mode", "\uE708", cardWidth);
             cmbMode = AddCombo("Red at night", new[] { "Automatic (schedule)", "Always day colors", "Always red" }, (int)work.Mode);
             dtStart = AddTime("Night starts", work.NightStartMin);
             dtEnd = AddTime("Night ends", work.NightEndMin);
             tbDay = AddTrack("Day brightness", work.DayBrightness);
             tbNight = AddTrack("Night brightness", work.NightBrightness);
-            AddHeader("Weather");
+            AddCard("Weather", "\uE9CA", cardWidth);
             cbWeather = AddCheck("Show weather forecast", work.ShowWeather);
             AddLabel("City");
-            txtCity = new TextBox { Text = work.WeatherCity, Dock = DockStyle.Fill };
+            txtCity = new TextBox { Text = work.WeatherCity, Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, Px(5), 0, Px(5)) };
             grid.Controls.Add(txtCity);
-            var hint = new Label { Text = "Leave City blank to detect your location automatically.", AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(0, 0, 0, Px(4)) };
-            grid.Controls.Add(hint);
-            grid.SetColumnSpan(hint, 2);
+            AddHint("Leave City blank to detect your location automatically.");
             cmbUnits = AddCombo("Units", new[] { "Automatic (by country)", "Celsius (\u00B0C)", "Fahrenheit (\u00B0F)" }, work.WeatherUnits);
-            AddHeader("Lock screen");
+            AddCard("Lock screen", "\uE72E", cardWidth);
             cbWinL = AddCheck("Show the clock when I press Win+L", work.TakeOverWinL);
             cbSkip = AddCheck("Skip the lock screen picture (straight to password)", LockControl.SkipLockScreen());
-            var adminNote = new Label { Text = "Windows asks for administrator approval once to change these.", AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(0, 0, 0, Px(4)) };
-            grid.Controls.Add(adminNote);
-            grid.SetColumnSpan(adminNote, 2);
-            AddHeader("Screensaver");
+            AddHint("Windows asks for administrator approval once to change these.");
+            AddCard("Screensaver", "\uE7F8", cardWidth);
             AddLabel("Start after (minutes)");
-            numWait = new NumericUpDown { Minimum = 1, Maximum = 600, Value = Installer.TimeoutMinutes(), Width = Px(80), Anchor = AnchorStyles.Left };
+            numWait = new NumericUpDown { Minimum = 1, Maximum = 600, Value = Installer.TimeoutMinutes(), Width = Px(90), Anchor = AnchorStyles.Left, BorderStyle = BorderStyle.FixedSingle };
             grid.Controls.Add(numWait);
             cbLock = AddCheck("Lock the PC when the clock is dismissed", Installer.LockOnResume());
+            foreach (var c in cards) c.FitHeight();
+            previewCard.FitHeight();
 
-            // Bottom: status + buttons
-            status = new Label { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, Px(14), 0, 0) };
-            root.Controls.Add(status, 0, 1);
-            var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, Px(10), 0, 0) };
-            var close = new Button { Text = "Close", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(Px(80), Px(30)) };
-            var apply = new Button { Text = "Apply", AutoSize = true, MinimumSize = new Size(Px(80), Px(30)) };
-            var lockNow = new Button { Text = "Apply && lock now", AutoSize = true, MinimumSize = new Size(Px(80), Px(30)) };
+            // Message bar (status), command bar and header, docked from the top down.
+            messageBar = new Panel { Dock = DockStyle.Top, Height = Px(40), Padding = new Padding(Px(20), 0, Px(20), 0) };
+            messageIcon = new Label { Dock = DockStyle.Left, Width = Px(28), TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Fluent.IconFamily, 11f) };
+            status = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, ForeColor = Fluent.Text };
+            messageBar.Controls.Add(status);
+            messageBar.Controls.Add(messageIcon);
+
+            var commandBar = new Panel { Dock = DockStyle.Top, Height = Px(48), BackColor = Color.White, Padding = new Padding(Px(12), Px(6), Px(12), Px(6)) };
+            commandBar.Paint += (o, e) => { using (var pen = new Pen(Fluent.Stroke)) e.Graphics.DrawLine(pen, 0, commandBar.Height - 1, commandBar.Width, commandBar.Height - 1); };
+            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.White };
+            var apply = new FluentButton("Apply", ButtonKind.Command, "\uE74E");
+            var lockNow = new FluentButton("Apply && lock now", ButtonKind.Command, "\uE72E");
+            var full = new FluentButton("Try full screen", ButtonKind.Command, "\uE740");
             apply.Click += (o, e) => Apply();
             lockNow.Click += (o, e) => { if (Apply()) { StartInstalled("/lock"); Close(); } };
-            buttons.Controls.Add(close); buttons.Controls.Add(apply); buttons.Controls.Add(lockNow);
-            root.Controls.Add(buttons, 1, 1);
-            AcceptButton = apply; CancelButton = close;
+            full.Click += (o, e) => ShowFullScreenTest();
+            foreach (var b in new[] { apply, lockNow, full }) { b.Margin = new Padding(0, 0, Px(4), 0); commands.Controls.Add(b); }
+            commandBar.Controls.Add(commands);
 
-            foreach (Control c in grid.Controls) Hook(c);
+            var header = new Panel { Dock = DockStyle.Top, Height = Px(48), BackColor = Fluent.Brand };
+            string version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+            header.Paint += (o, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                Fluent.DrawIcon(g, "\uE823", 14f, Color.White, new RectangleF(Px(14), 0, Px(32), header.Height));
+                using (var bold = new Font("Segoe UI Semibold", 12f))
+                using (var light = new Font("Segoe UI", 12f))
+                {
+                    var size = TextRenderer.MeasureText("LockClock", bold);
+                    TextRenderer.DrawText(g, "LockClock", bold, new Rectangle(Px(54), 0, size.Width, header.Height), Color.White, TextFormatFlags.VerticalCenter);
+                    using (var pen = new Pen(Color.FromArgb(120, 255, 255, 255))) g.DrawLine(pen, Px(62) + size.Width, Px(16), Px(62) + size.Width, header.Height - Px(16));
+                    TextRenderer.DrawText(g, "Settings", light, new Rectangle(Px(72) + size.Width, 0, Px(200), header.Height), Color.White, TextFormatFlags.VerticalCenter);
+                }
+                TextRenderer.DrawText(g, "v" + version, Font, new Rectangle(0, 0, header.Width - Px(20), header.Height), Color.FromArgb(220, 255, 255, 255),
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
+            };
+
+            Controls.Add(body);
+            Controls.Add(messageBar);
+            Controls.Add(commandBar);
+            Controls.Add(header);
+
+            foreach (var gr in grids) foreach (Control c in gr.Controls) Hook(c);
             numWait.ValueChanged += (o, e) => MarkDirty();
             // Wait until typing pauses before looking up a new city.
             txtCity.TextChanged += (o, e) => { cityDebounce.Stop(); cityDebounce.Start(); MarkDirty(); };
@@ -949,12 +1290,40 @@ namespace LockClock
             ShowStatus();
         }
 
+        enum Tone { Success, Warning, Error, Info }
+
+        void SetStatus(Tone tone, string text)
+        {
+            switch (tone)
+            {
+                case Tone.Success: messageBar.BackColor = Color.FromArgb(0xDF, 0xF6, 0xDD); messageIcon.ForeColor = Color.FromArgb(0x10, 0x7C, 0x10); messageIcon.Text = "\uE930"; break;
+                case Tone.Warning: messageBar.BackColor = Color.FromArgb(0xFF, 0xF4, 0xCE); messageIcon.ForeColor = Color.FromArgb(0x9D, 0x5D, 0x00); messageIcon.Text = "\uE7BA"; break;
+                case Tone.Error: messageBar.BackColor = Color.FromArgb(0xFD, 0xE7, 0xE9); messageIcon.ForeColor = Color.FromArgb(0xA8, 0x00, 0x00); messageIcon.Text = "\uEA39"; break;
+                default: messageBar.BackColor = Color.FromArgb(0xEB, 0xF3, 0xFC); messageIcon.ForeColor = Color.FromArgb(0x0F, 0x6C, 0xBD); messageIcon.Text = "\uE946"; break;
+            }
+            status.Text = text;
+        }
+
+        // Windows 11: tint the title bar to match the header.
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                int caption = Fluent.Brand.R | (Fluent.Brand.G << 8) | (Fluent.Brand.B << 16);
+                int text = 0x00FFFFFF;
+                Native.DwmSetWindowAttribute(Handle, 35, ref caption, 4);
+                Native.DwmSetWindowAttribute(Handle, 36, ref text, 4);
+            }
+            catch (Exception) { }
+        }
         int Px(int v) { return (int)Math.Round(v * k); }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             CenterToScreen();
+            ActiveControl = null;
         }
 
         double? PreviewNight()
@@ -982,21 +1351,21 @@ namespace LockClock
         void MarkDirty()
         {
             if (loading) return;
-            status.ForeColor = Color.DarkOrange;
-            status.Text = "Changes not applied yet - click Apply.";
+            SetStatus(Tone.Warning, "You have unsaved changes. Click Apply to save them.");
+
         }
 
         void ShowStatus()
         {
             if (Installer.IsActive())
             {
-                status.ForeColor = Color.ForestGreen;
-                status.Text = "\u2714 LockClock is your screensaver (starts after " + Installer.TimeoutMinutes() + " min idle).\n    Ctrl+Alt+L = show the clock and lock now.";
+                SetStatus(Tone.Success, "LockClock is your screensaver (starts after " + Installer.TimeoutMinutes() + " min idle).   Ctrl+Alt+L shows the clock and locks now.");
+
             }
             else
             {
-                status.ForeColor = Color.DimGray;
-                status.Text = "LockClock is not your screensaver yet - click Apply to turn it on.";
+                SetStatus(Tone.Info, "LockClock is not your screensaver yet. Click Apply to turn it on.");
+
             }
         }
 
@@ -1019,16 +1388,16 @@ namespace LockClock
                 ShowStatus();
                 if (lockError != null)
                 {
-                    status.ForeColor = Color.Firebrick;
-                    status.Text = lockError;
+                    SetStatus(Tone.Error, lockError);
+
                     return false;
                 }
                 return true;
             }
             catch (Exception ex)
             {
-                status.ForeColor = Color.Firebrick;
-                status.Text = "Could not apply: " + ex.Message;
+                SetStatus(Tone.Error, "Could not apply: " + ex.Message);
+
                 return false;
             }
         }
@@ -1041,10 +1410,84 @@ namespace LockClock
 
         void ShowFullScreenTest()
         {
-            var scr = Screen.FromControl(this);
-            var f = new ClockForm(work.Clone(), scr.Bounds, true, IntPtr.Zero) { TestMode = true, PreviewNight = PreviewNight() };
-            f.Show();
-            f.Activate();
+            ReadControls(work);
+            var s = work.Clone();
+            var group = new List<Form>();
+            ClockForm main = null;
+            foreach (var scr in Screen.AllScreens)
+            {
+                var f = new ClockForm(s, scr.Bounds, true, IntPtr.Zero) { TestMode = true, PreviewNight = PreviewNight(), Blank = !s.ShowsClockOn(scr), TestGroup = group };
+                group.Add(f);
+                f.Show();
+                if (!f.Blank && main == null) main = f;
+            }
+            (main ?? (ClockForm)group[0]).Activate();
+        }
+
+        static string DisplayNumber(Screen s)
+        {
+            string digits = new string(Array.FindAll(s.DeviceName.ToCharArray(), char.IsDigit));
+            return digits.Length > 0 ? digits : "?";
+        }
+
+        void AddDisplayChooser()
+        {
+            AddLabel("Show on");
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), Dock = DockStyle.Fill, BackColor = Fluent.Card };
+            cmbDisplay = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.White, Width = Px(220), Margin = new Padding(0, Px(5), 0, Px(5)) };
+            displayValues.Add("all"); cmbDisplay.Items.Add("All displays");
+            displayValues.Add("primary"); cmbDisplay.Items.Add("Main display only");
+            var screens = Screen.AllScreens;
+            Array.Sort(screens, (a, b) => string.CompareOrdinal(a.DeviceName, b.DeviceName));
+            foreach (var s in screens)
+            {
+                displayValues.Add(s.DeviceName);
+                cmbDisplay.Items.Add("Display " + DisplayNumber(s) + " (" + s.Bounds.Width + "\u00D7" + s.Bounds.Height + (s.Primary ? ", main)" : ")"));
+            }
+            int index = displayValues.FindIndex(v => string.Equals(v, work.Display, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                // Saved display is not connected right now: keep the choice, show it as such.
+                displayValues.Add(work.Display);
+                cmbDisplay.Items.Add("Display " + new string(Array.FindAll(work.Display.ToCharArray(), char.IsDigit)) + " (not connected)");
+                index = displayValues.Count - 1;
+            }
+            cmbDisplay.SelectedIndex = index;
+            int widest = 0;
+            foreach (var item in cmbDisplay.Items) widest = Math.Max(widest, TextRenderer.MeasureText(item.ToString(), cmbDisplay.Font).Width);
+            cmbDisplay.DropDownWidth = Math.Max(cmbDisplay.Width, widest + SystemInformation.VerticalScrollBarWidth + Px(8));
+            cmbDisplay.SelectedIndexChanged += (o, e) => MarkDirty();
+            var identify = new FluentButton("Identify", ButtonKind.Secondary, "\uE7F4") { Margin = new Padding(Px(8), Px(2), 0, Px(2)) };
+            identify.Click += (o, e) => IdentifyDisplays();
+            row.Controls.Add(cmbDisplay);
+            row.Controls.Add(identify);
+            grid.Controls.Add(row);
+        }
+
+        // Shows each display's number in big digits for a few seconds.
+        void IdentifyDisplays()
+        {
+            var forms = new List<Form>();
+            foreach (var s in Screen.AllScreens)
+            {
+                var b = s.Bounds;
+                int size = Math.Min(b.Width, b.Height) / 3;
+                var f = new Form
+                {
+                    FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual, ShowInTaskbar = false, TopMost = true,
+                    BackColor = Color.Black, ForeColor = Color.White, Bounds = new Rectangle(b.X + (b.Width - size) / 2, b.Y + (b.Height - size) / 2, size, size)
+                };
+                f.Controls.Add(new Label
+                {
+                    Text = DisplayNumber(s), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Segoe UI", size * 0.45f, FontStyle.Bold, GraphicsUnit.Pixel), ForeColor = s.Primary ? Color.FromArgb(255, 90, 60) : Color.White
+                });
+                f.Show();
+                forms.Add(f);
+            }
+            var timer = new System.Windows.Forms.Timer { Interval = 2500 };
+            timer.Tick += (o, e) => { timer.Dispose(); foreach (var f in forms) f.Close(); };
+            timer.Start();
         }
 
         void ReadControls(Settings t)
@@ -1063,25 +1506,35 @@ namespace LockClock
             t.WeatherCity = txtCity.Text.Trim();
             t.WeatherUnits = cmbUnits.SelectedIndex;
             t.TakeOverWinL = cbWinL.Checked;
+            t.Display = displayValues[cmbDisplay.SelectedIndex];
         }
 
-        void AddHeader(string text)
+        void AddCard(string title, string glyph, int width)
         {
-            var l = new Label { Text = text, AutoSize = true, Font = new Font("Segoe UI Semibold", 10f), Margin = new Padding(0, grid.Controls.Count == 0 ? 0 : Px(10), 0, Px(2)) };
+            var card = new Card(title, glyph, width);
+            cards.Add(card);
+            cardStack.Controls.Add(card);
+            grid = card.Body;
+            grids.Add(grid);
+        }
+
+        void AddHint(string text)
+        {
+            var l = new Label { Text = text, AutoSize = true, ForeColor = Fluent.Text2, Margin = new Padding(0, Px(2), 0, Px(6)) };
             grid.Controls.Add(l);
             grid.SetColumnSpan(l, 2);
         }
 
         Label AddLabel(string text)
         {
-            var l = new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, Px(4), Px(12), Px(4)) };
+            var l = new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = Fluent.Text, Margin = new Padding(0, Px(6), Px(12), Px(6)) };
             grid.Controls.Add(l);
             return l;
         }
 
         CheckBox AddCheck(string text, bool value)
         {
-            var c = new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(0, Px(3), 0, Px(3)) };
+            var c = new ToggleSwitch { Text = text, Checked = value, Margin = new Padding(0, Px(3), 0, Px(3)) };
             grid.Controls.Add(c);
             grid.SetColumnSpan(c, 2);
             return c;
@@ -1090,7 +1543,7 @@ namespace LockClock
         ComboBox AddCombo(string label, string[] items, int index)
         {
             AddLabel(label);
-            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.White, Dock = DockStyle.Fill, Margin = new Padding(0, Px(5), 0, Px(5)) };
             c.Items.AddRange(items); c.SelectedIndex = index;
             grid.Controls.Add(c); return c;
         }
@@ -1098,7 +1551,7 @@ namespace LockClock
         DateTimePicker AddTime(string label, int minutes)
         {
             AddLabel(label);
-            var d = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Width = Px(100), Anchor = AnchorStyles.Left };
+            var d = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Width = Px(110), Anchor = AnchorStyles.Left, Margin = new Padding(0, Px(5), 0, Px(5)) };
             d.Value = DateTime.Today.AddMinutes(minutes);
             grid.Controls.Add(d); return d;
         }
@@ -1106,7 +1559,7 @@ namespace LockClock
         TrackBar AddTrack(string label, int value)
         {
             var l = AddLabel(label + ": " + value + "%");
-            var t = new TrackBar { Minimum = 5, Maximum = 100, TickFrequency = 5, Value = value, Dock = DockStyle.Fill, AutoSize = true };
+            var t = new TrackBar { Minimum = 5, Maximum = 100, TickFrequency = 10, TickStyle = TickStyle.None, Value = value, Dock = DockStyle.Fill, AutoSize = true, BackColor = Fluent.Card };
             t.ValueChanged += (o, e) => l.Text = label + ": " + t.Value + "%";
             grid.Controls.Add(t); return t;
         }
@@ -1269,7 +1722,12 @@ namespace LockClock
 
                     agent.InstallHook();
                     var timer = new System.Windows.Forms.Timer { Interval = 500 };
-                    timer.Tick += (o, e) => { if (quit.WaitOne(0)) Application.ExitThread(); };
+                    int ticks = 0;
+                    timer.Tick += (o, e) =>
+                    {
+                        if (quit.WaitOne(0)) { Application.ExitThread(); return; }
+                        if (++ticks % 60 == 1 && Installer.RestoreIfCleared()) Log("screensaver setting had been cleared by something else - restored");
+                    };
                     timer.Start();
                     Log("agent started");
                     Application.Run();
@@ -1386,6 +1844,7 @@ namespace LockClock
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll", SetLastError = true)] public static extern bool LockWorkStation();
+        [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
         public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetWindowsHookEx(int id, LowLevelKeyboardProc proc, IntPtr hMod, uint threadId);
         [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(IntPtr hook);
@@ -1434,6 +1893,7 @@ namespace LockClock
             {
                 if (a == "/night") ClockForm.ForcedNight = 1;
                 else if (a == "/day") ClockForm.ForcedNight = 0;
+                else if (a == "/blank") ClockForm.ForceBlank = true;
                 else if (a.StartsWith("/time="))
                 {
                     DateTime t;
@@ -1455,7 +1915,7 @@ namespace LockClock
                     var clockMutex = new Mutex(true, LockControl.ClockMutexName, out firstClock);
                     if (!firstClock && mode == "/lock") return 0; // already showing
                     foreach (var scr in Screen.AllScreens)
-                        new ClockForm(settings, scr.Bounds, true, IntPtr.Zero, lockWhenDone).Show();
+                        new ClockForm(settings, scr.Bounds, true, IntPtr.Zero, lockWhenDone) { Blank = !settings.ShowsClockOn(scr) }.Show();
                     Application.Run();
                     GC.KeepAlive(clockMutex);
                     return 0;

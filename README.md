@@ -20,10 +20,11 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 - 🔒 **Replaces the lock screen**: Win+L shows the clock straight away. Any key, click or mouse move locks Windows and goes **straight to the password box**, with no lock-screen picture in between.
 - ⏱️ **Big, readable, bold**: huge digits sized to your screen, with optional small ticking seconds, 12/24-hour time and the date.
 - ⛅ **Weather at a glance**: the current conditions plus today's high/low and a 3-day forecast. It finds your location automatically, or you can type a city.
-- 🖥️ **Made for always-on screens**: pure black background, gentle pixel shift against burn-in, keeps the display awake, works on every monitor.
-- 👀 **Live preview**: see every change instantly in the settings app, with a day/night preview switch.
+- 🖥️ **Made for always-on screens**: pure black background, gentle pixel shift against burn-in, keeps the display awake.
+- 🖥️🖥️ **Multi-monitor aware**: show the clock on all displays, only the main one, or a display you pick (with an *Identify* button). Other screens go black so nothing on them is visible.
+- 👀 **Live preview**: see every change instantly in a clean, Power Apps–style settings app (Fluent design, toggle switches, day/night preview).
 - ✅ **One-click setup**: click **Apply** and LockClock sets itself up. No digging through Windows screensaver settings.
-- 🪶 **Tiny & dependency-free**: a single ~60 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
+- 🪶 **Tiny & dependency-free**: a single ~70 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
 
 | Day | Settings with live preview |
 |---|---|
