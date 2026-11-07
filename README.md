@@ -16,28 +16,31 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 
 ## Why you'll love it
 
-- 🌙 **Night mode that won't wake you up**: after 21:00 the clock fades to a dim red on pure black, then back to white in the morning (times and brightness are adjustable).
+- 🌙 **Night mode that won't wake you up**: after 21:00 the clock fades to a dim red on pure black, then back to white in the morning (times are adjustable).
+- 🔆 **Real screen brightness**: while the clock shows, LockClock sets your screen's actual brightness to your day or night level, using DDC/CI for external monitors and Windows' built-in control for laptop screens. Your normal brightness comes back the moment you touch the PC.
 - 🔒 **Replaces the lock screen**: Win+L shows the clock straight away. Any key, click or mouse move locks Windows and goes **straight to the password box**, with no lock-screen picture in between.
 - ⏱️ **Big, readable, bold**: huge digits sized to your screen, with optional small ticking seconds, 12/24-hour time and the date.
 - ⛅ **Weather at a glance**: the current conditions plus today's high/low and a 3-day forecast. It finds your location automatically, or you can type a city.
 - 🖥️ **Made for always-on screens**: pure black background, gentle pixel shift against burn-in, keeps the display awake.
 - 🖥️🖥️ **Multi-monitor aware**: show the clock on all displays, only the main one, or a display you pick (with an *Identify* button). Other screens go black so nothing on them is visible.
-- 👀 **Live preview**: see every change instantly in a clean, Power Apps–style settings app (Fluent design, toggle switches, day/night preview).
-- ✅ **One-click setup**: click **Apply** and LockClock sets itself up. No digging through Windows screensaver settings.
-- 🪶 **Tiny & dependency-free**: a single ~70 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
+- 👀 **Live preview**: see every change instantly in a clean, PowerToys-style settings app (navigation pane, settings cards, toggle switches, your Windows accent color).
+- ✅ **Set up once, saves automatically**: click **Set up** the first time and LockClock configures itself. After that, every change saves automatically, just like PowerToys. No digging through Windows screensaver settings.
+- 🪶 **Tiny & dependency-free**: a single ~90 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
 
-| Day | Settings with live preview |
+| Day | Settings |
 |---|---|
 | ![Day colors](docs/screenshots/clock-day.png) | ![Settings app](docs/screenshots/settings.png) |
+
+![Night & brightness settings](docs/screenshots/settings-brightness.png)
 
 ## Install
 
 1. Download **[LockClock.msi](https://github.com/panhavad/lockclock/releases/latest/download/LockClock.msi)** and run it.
    It installs just for you (no admin rights), sets LockClock as your screensaver, and opens the settings app.
-2. Pick your look and click **Apply**.
-3. Optional: tick **Show the clock when I press Win+L** and **Skip the lock screen picture**, then click **Apply**. Windows asks for administrator approval once.
+2. Pick your look. Changes save automatically.
+3. Optional: on the **Lock screen** page, turn on **Show the clock when I press Win+L** and **Skip the lock screen picture**. Windows asks for administrator approval once.
 
-Prefer no installer? Download the portable **[LockClock.exe](https://github.com/panhavad/lockclock/releases/latest/download/LockClock.exe)**, run it, and click **Apply**.
+Prefer no installer? Download the portable **[LockClock.exe](https://github.com/panhavad/lockclock/releases/latest/download/LockClock.exe)**, run it, and click **Set up**.
 
 > Windows SmartScreen may warn because the app isn't code-signed yet: click **More info → Run anyway**.
 
@@ -48,7 +51,7 @@ Prefer no installer? Download the portable **[LockClock.exe](https://github.com/
 | Press **Win+L** *(if enabled)* | Shows the clock instantly; touching anything locks the PC |
 | Press **Ctrl+Alt+L** | Same, from the Start Menu shortcut "Lock with Clock" |
 | Leave the PC idle | Starts as your screensaver after the wait time you chose |
-| Start Menu → **LockClock Settings** | Change the look, night hours, weather and lock options |
+| Start Menu → **LockClock Settings** | Change the look, displays, night hours, brightness, weather and lock options |
 
 ## How it works (and what to know)
 
@@ -58,6 +61,7 @@ Windows doesn't let apps draw on the real lock screen, so LockClock shows the cl
 - **While the clock is showing, the PC is not locked yet.** The first key press, click, mouse move or focus change (e.g. Ctrl+Alt+Del → Task Manager) locks it immediately. If Windows ever refuses to lock, the clock stays up and tries again.
 - While Win+L is taken over, the **Lock** option is hidden from the Ctrl+Alt+Del menu. Win+L, sleep and closing the lid still lock as usual.
 - "Skip the lock screen picture" sets the machine policy `NoLockScreen` (honored on Windows Enterprise and Education).
+- Real brightness uses DDC/CI for external monitors (some monitors have it switched off in their on-screen menu) and WMI for built-in laptop panels. Your original levels are saved first, so even if the clock is closed unexpectedly, the helper restores them when you sign in. Displays that can't be controlled get dimmed clock colors instead.
 - On company-managed PCs, IT policies may override or report these settings.
 
 ## Privacy
@@ -67,7 +71,7 @@ Weather comes from [Open-Meteo](https://open-meteo.com/) (free, no account). Whe
 ## Uninstall
 
 Settings → Apps → **LockClock** → Uninstall. This stops the helper, gives Win+L back to Windows, and removes the screensaver and shortcuts.
-"Skip the lock screen picture" is a machine setting: untick it in LockClock Settings first if you want the picture back.
+"Skip the lock screen picture" is a machine setting: turn it off in LockClock Settings first if you want the picture back.
 
 ## Build from source
 
