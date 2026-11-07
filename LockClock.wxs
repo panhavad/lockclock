@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Per-user MSI (no admin rights): installs to %LOCALAPPDATA%\LockClock and sets LockClock as the screensaver. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="LockClock" Language="1033" Version="$(var.Version)" Manufacturer="LockClock"
+           UpgradeCode="{ED92DD0D-BEB6-49E7-A005-E54C688B3403}">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited"
+             Description="LockClock - full-screen clock screensaver" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of LockClock is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="LockClockIcon" SourceFile="LockClock.ico" />
+    <Property Id="ARPPRODUCTICON" Value="LockClockIcon" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="LockClock" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppFiles" Guid="{D8110E4F-0551-4C6B-B9C7-5F5F028E5DC3}">
+        <!-- Same binary twice: Windows needs .scr for screensavers; shortcuts need .exe to keep their arguments. -->
+        <File Id="LockClockExe" Name="LockClock.exe" Source="bin\LockClock.scr" />
+        <File Id="LockClockScr" Name="LockClock.scr" Source="bin\LockClock.scr" />
+        <RegistryValue Root="HKCU" Key="Software\LockClock\Install" Name="Path" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="Shortcuts" Guid="{2751A74A-2400-45F3-B1B2-2C0ADD1D99C4}">
+        <Shortcut Id="SettingsShortcut" Name="LockClock Settings" Description="LockClock settings"
+                  Target="[#LockClockExe]" Arguments="/c" WorkingDirectory="INSTALLFOLDER" />
+        <!-- Hotkey 1612 = Ctrl+Alt+L -->
+        <Shortcut Id="LockShortcut" Name="Lock with Clock" Description="Show the full-screen clock; the PC locks as soon as you touch it"
+                  Target="[#LockClockExe]" Arguments="/lock" Hotkey="1612" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\LockClock\Install" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="LockClock" Level="1">
+      <ComponentRef Id="AppFiles" />
+      <ComponentRef Id="Shortcuts" />
+    </Feature>
+
+    <CustomAction Id="SetScreensaver" FileKey="LockClockExe" ExeCommand="/install" Execute="immediate" Return="ignore" />
+    <CustomAction Id="OpenSettings" FileKey="LockClockExe" ExeCommand="/c" Execute="immediate" Return="asyncNoWait" />
+    <CustomAction Id="UnsetScreensaver" FileKey="LockClockExe" ExeCommand="/uninstall" Execute="immediate" Return="ignore" />
+    <CustomAction Id="StopAgent" FileKey="LockClockExe" ExeCommand="/stopagent" Execute="immediate" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetScreensaver" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
+      <Custom Action="OpenSettings" After="SetScreensaver">NOT Installed AND NOT REMOVE="ALL" AND UILevel &gt;= 5</Custom>
+      <!-- Before InstallValidate so the running Win+L helper does not hold files open. -->
+      <Custom Action="UnsetScreensaver" Before="InstallValidate">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="StopAgent" After="UnsetScreensaver">WIX_UPGRADE_DETECTED</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>
