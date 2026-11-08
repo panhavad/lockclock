@@ -1,5 +1,5 @@
 # Builds dist\LockClock.exe (portable) and dist\LockClock.msi (per-user installer).
-param([string]$Version = '1.4.0')
+param([string]$Version = '1.5.0')
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'build.ps1')
 
@@ -14,7 +14,14 @@ if (-not (Test-Path "$wixDir\candle.exe")) {
 $dist = Join-Path $PSScriptRoot 'dist'
 $obj = Join-Path $PSScriptRoot 'obj'
 New-Item -ItemType Directory -Force $dist, $obj | Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'bin\LockClock.scr') (Join-Path $dist 'LockClock.exe') -Force
+$distExe = Join-Path $dist 'LockClock.exe'
+try { Copy-Item (Join-Path $PSScriptRoot 'bin\LockClock.scr') $distExe -Force }
+catch {
+    # The portable exe is running (e.g. its settings window is open): a running exe can be renamed, so set it aside.
+    Rename-Item $distExe ("LockClock.exe.inuse-" + [DateTime]::Now.Ticks)
+    Copy-Item (Join-Path $PSScriptRoot 'bin\LockClock.scr') $distExe -Force
+}
+Get-ChildItem $dist -Filter 'LockClock.exe.inuse-*' | Remove-Item -ErrorAction SilentlyContinue
 
 Push-Location $PSScriptRoot
 try {
@@ -26,4 +33,4 @@ try {
 } finally { Pop-Location }
 
 Remove-Item $obj -Recurse -Force
-Get-ChildItem $dist | Select-Object Name, @{n='KB'; e={[math]::Round($_.Length / 1KB)}}
+Get-ChildItem $dist -Filter 'LockClock.*' -Exclude '*.inuse-*' | Select-Object Name, @{n='KB'; e={[math]::Round($_.Length / 1KB)}}

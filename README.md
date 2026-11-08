@@ -19,6 +19,7 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 - 🌙 **Night mode that won't wake you up**: after 21:00 the clock fades to a dim red on pure black, then back to white in the morning (times are adjustable).
 - 🔆 **Real screen brightness**: while the clock shows, LockClock sets your screen's actual brightness to your day or night level, using DDC/CI for external monitors and Windows' built-in control for laptop screens. Your normal brightness comes back the moment you touch the PC.
 - 🔒 **Replaces the lock screen**: Win+L shows the clock straight away. Any key, click or mouse move locks Windows and goes **straight to the password box**, with no lock-screen picture in between.
+- 🖼️ **Live desktop clock**: the same clock can live on your desktop background, behind your icons, like a live wallpaper. It follows the night schedule, never touches your screen brightness, and works on the newest Windows 11 builds.
 - ⏱️ **Big, readable, bold**: huge digits sized to your screen, with optional small ticking seconds, 12/24-hour time and the date.
 - ⛅ **Weather at a glance**: the current conditions plus today's high/low and a 3-day forecast. It finds your location automatically, or you can type a city.
 - 🖥️ **Made for always-on screens**: pure black background, gentle pixel shift against burn-in, keeps the display awake.
@@ -32,6 +33,10 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 | ![Day colors](docs/screenshots/clock-day.png) | ![Settings app](docs/screenshots/settings.png) |
 
 ![Night & brightness settings](docs/screenshots/settings-brightness.png)
+
+**On your desktop**, behind the icons:
+
+![Live desktop clock](docs/screenshots/desktop.png)
 
 ## Install
 
@@ -62,6 +67,7 @@ Windows doesn't let apps draw on the real lock screen, so LockClock shows the cl
 - While Win+L is taken over, the **Lock** option is hidden from the Ctrl+Alt+Del menu. Win+L, sleep and closing the lid still lock as usual.
 - "Skip the lock screen picture" sets the machine policy `NoLockScreen` (honored on Windows Enterprise and Education).
 - Real brightness uses DDC/CI for external monitors (some monitors have it switched off in their on-screen menu) and WMI for built-in laptop panels. Your original levels are saved first, so even if the clock is closed unexpectedly, the helper restores them when you sign in. Displays that can't be controlled get dimmed clock colors instead.
+- The desktop clock is a separate small process that places the clock behind the desktop icons, the same technique live-wallpaper apps use, including the Windows 11 24H2+ desktop layout. It re-attaches by itself if Explorer restarts or displays change.
 - On company-managed PCs, IT policies may override or report these settings.
 
 ## Privacy

@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("LockClock Screensaver")]
 [assembly: System.Reflection.AssemblyProduct("LockClock")]
-[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
 [assembly: System.Reflection.AssemblyDescription("Full-screen clock screensaver with red night mode and weather")]
 
 namespace LockClock
@@ -38,6 +38,7 @@ namespace LockClock
         public int NightBrightness = 45;
         public int FontWeight = 2; // 0 Light, 1 Regular, 2 Bold
         public bool HardwareBrightness = true; // set the real screen brightness while the clock shows
+        public bool DesktopClock = false; // live clock on the desktop background
         public bool TakeOverWinL = false; // Win+L shows the clock; touching it locks
         public bool ShowWeather = true;
         public string WeatherCity = ""; // empty = detect from IP address
@@ -85,6 +86,7 @@ namespace LockClock
                 s.NightBrightness = Clamp(Get(k, "NightBrightness", s.NightBrightness), 5, 100);
                 s.FontWeight = Clamp(Get(k, "FontWeight", 2), 0, 2);
                 s.HardwareBrightness = Get(k, "HardwareBrightness", 1) != 0;
+                s.DesktopClock = Get(k, "DesktopClock", 0) != 0;
                 s.ShowWeather = Get(k, "ShowWeather", 1) != 0;
                 s.WeatherCity = (k.GetValue("WeatherCity") as string ?? "").Trim();
                 s.Display = (k.GetValue("Display") as string ?? "all").Trim();
@@ -115,7 +117,15 @@ namespace LockClock
                 k.SetValue("Display", Display ?? "all");
                 k.SetValue("WeatherUnits", WeatherUnits);
                 k.SetValue("TakeOverWinL", TakeOverWinL ? 1 : 0);
+                k.SetValue("DesktopClock", DesktopClock ? 1 : 0);
+                k.SetValue("Revision", Revision() + 1); // lets the desktop clock pick up changes live
             }
+        }
+
+        public static int Revision()
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(Key))
+                return k != null && k.GetValue("Revision") is int ? (int)k.GetValue("Revision") : 0;
         }
 
         public Settings Clone() { return (Settings)MemberwiseClone(); }
@@ -419,6 +429,21 @@ namespace LockClock
         public List<Form> TestGroup; // all screens of one full-screen test close together
         public static bool ForceBlank; // debug: /blank
 
+        IntPtr desktopParent, desktopInsertAfter;
+        Rectangle desktopRect;
+
+        // A child window inside the desktop (behind the icons). Never takes input or changes brightness.
+        public static ClockForm CreateDesktop(Settings s, Rectangle rectInParent, IntPtr parent, IntPtr insertAfter)
+        {
+            var f = new ClockForm(s, Rectangle.Empty, false, IntPtr.Zero);
+            f.FormBorderStyle = FormBorderStyle.None;
+            f.ShowInTaskbar = false;
+            f.desktopParent = parent;
+            f.desktopInsertAfter = insertAfter;
+            f.desktopRect = rectInParent;
+            return f;
+        }
+
         public static ClockForm CreateEmbedded(Settings s)
         {
             var f = new ClockForm(s, Rectangle.Empty, false, IntPtr.Zero);
@@ -486,6 +511,18 @@ namespace LockClock
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
+            if (desktopParent != IntPtr.Zero)
+            {
+                const int WS_CHILD = 0x40000000, WS_VISIBLE = 0x10000000, WS_CLIPSIBLINGS = 0x04000000;
+                Native.SetWindowLong(Handle, -16, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
+                // Windows 11 24H2+ desktop hosts have no redirection surface, so the clock needs its own: a layered child.
+                Native.SetWindowLong(Handle, -20, Native.GetWindowLong(Handle, -20) | 0x00080000 /* WS_EX_LAYERED */);
+                Native.SetLayeredWindowAttributes(Handle, 0, 255, 0x2 /* LWA_ALPHA */);
+                Native.SetParent(Handle, desktopParent);
+                // SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW; z-order just below the icons when insertAfter is set
+                Native.SetWindowPos(Handle, desktopInsertAfter, desktopRect.X, desktopRect.Y, desktopRect.Width, desktopRect.Height,
+                    0x0010 | 0x0020 | 0x0040 | (desktopInsertAfter == IntPtr.Zero ? 0x0004u : 0u));
+            }
             if (isPreview)
             {
                 Native.SetParent(Handle, previewParent);
@@ -675,7 +712,8 @@ namespace LockClock
             var now = Now;
             double night = NightFactor(now);
             // When the screen itself is dimmed, draw at full strength; otherwise dim the colors instead.
-            bool hardware = settings.HardwareBrightness && ScreenBrightness.Controls(Screen.FromControl(this));
+            // The desktop clock never changes the screen, so the sliders (screen brightness) don't dim it either.
+            bool hardware = settings.HardwareBrightness && (desktopParent != IntPtr.Zero || ScreenBrightness.Controls(Screen.FromControl(this)));
             Color day = Scale(Color.FromArgb(255, 245, 235), hardware ? 1.0 : settings.DayBrightness / 100.0);
             Color red = Scale(Color.FromArgb(255, 28, 10), hardware ? 1.0 : settings.NightBrightness / 100.0);
             Color main = Lerp(day, red, night);
@@ -840,6 +878,7 @@ namespace LockClock
             if (copy)
             {
                 Agent.Stop();
+                DesktopClock.Stop();
                 CopySelf(ScrPath);
                 CopySelf(ExePath);
             }
@@ -851,6 +890,7 @@ namespace LockClock
             CreateShortcut(Path.Combine(programs, "LockClock Settings.lnk"), ExePath, "/c", "", "LockClock settings");
             using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 1);
             Agent.Configure(agentWasWanted, copy);
+            DesktopClock.Configure(Settings.Load().DesktopClock, copy);
         }
 
         public static void SetScreensaver(int timeoutMinutes, bool lockOnResume)
@@ -885,6 +925,7 @@ namespace LockClock
         public static void Uninstall()
         {
             Agent.Configure(false);
+            DesktopClock.Configure(false);
             using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 0);
             using (var k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
             {
@@ -1405,7 +1446,7 @@ namespace LockClock
         readonly Settings work;
         readonly float k;
         readonly ClockForm preview;
-        ToggleSwitch cb24, cbSec, cbDate, cbShift, cbLock, cbWeather, cbWinL, cbSkip, cbHardware;
+        ToggleSwitch cb24, cbSec, cbDate, cbShift, cbLock, cbWeather, cbWinL, cbSkip, cbHardware, cbDesktop;
         ComboBox cmbMode, cmbFont, cmbPreview, cmbUnits, cmbDisplay;
         readonly List<string> displayValues = new List<string>();
         TextBox txtCity;
@@ -1569,6 +1610,12 @@ namespace LockClock
             txtCity = new TextBox { Text = work.WeatherCity, Width = Px(240), BorderStyle = BorderStyle.FixedSingle, AccessibleName = "City" };
             page.Controls.Add(new SettingsCard("\uE707", "City", "Leave blank to detect your location automatically.", txtCity));
             cmbUnits = Choice(page, "\uE9CA", "Units", "Automatic uses \u00B0F only where that's the local custom.", new[] { "Automatic (by country)", "Celsius (\u00B0C)", "Fahrenheit (\u00B0F)" }, work.WeatherUnits);
+
+            // Desktop
+            page = NewPage("Desktop", "\uE7F8");
+            Section(page, "Live desktop clock");
+            cbDesktop = Toggle(page, "\uE7F8", "Show the clock on my desktop", "A live clock behind your desktop icons, with the same look, night colors and weather. Uses the displays chosen on the Displays page. It never changes your screen brightness.", work.DesktopClock);
+            page.Controls.Add(new SettingsCard("\uE946", "Tip", "Turn off \"Show seconds\" to save a little battery: the desktop then redraws once a minute.", null));
 
             // Lock screen
             page = NewPage("Lock screen", "\uE72E");
@@ -1858,7 +1905,164 @@ namespace LockClock
             t.WeatherCity = txtCity.Text.Trim();
             t.WeatherUnits = cmbUnits.SelectedIndex;
             t.TakeOverWinL = cbWinL.Checked;
+            t.DesktopClock = cbDesktop.Checked;
             t.Display = displayValues[cmbDisplay.SelectedIndex];
+        }
+    }
+
+    // Live clock on the desktop background, behind the icons (the technique live-wallpaper apps use).
+    // Runs as its own process ("/desktop"), started at sign-in while the option is on.
+    static class DesktopClock
+    {
+        const string MutexName = @"Local\LockClock.Desktop";
+        const string QuitEventName = @"Local\LockClock.DesktopQuit";
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string RunValue = "LockClockDesktop";
+        static readonly List<ClockForm> forms = new List<ClockForm>();
+        static IntPtr parent;
+        static string layout;
+        static int revision = -1;
+
+        static void Log(string msg)
+        {
+            try
+            {
+                string path = Path.Combine(Installer.Dir, "desktop.log");
+                if (File.Exists(path) && new FileInfo(path).Length > 64 * 1024) File.Delete(path);
+                File.AppendAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ") + msg + Environment.NewLine);
+            }
+            catch (Exception) { }
+        }
+
+        public static int Run()
+        {
+            if (!Settings.Load().DesktopClock) return 0;
+            bool first;
+            using (var mutex = new Mutex(true, MutexName, out first))
+            {
+                if (!first) return 0;
+                using (var quit = new EventWaitHandle(false, EventResetMode.ManualReset, QuitEventName))
+                {
+                    quit.Reset();
+                    Attach();
+                    var timer = new System.Windows.Forms.Timer { Interval = 2000 };
+                    timer.Tick += (o, e) =>
+                    {
+                        if (quit.WaitOne(0)) { Application.ExitThread(); return; }
+                        var s = Settings.Load();
+                        if (!s.DesktopClock) { Application.ExitThread(); return; }
+                        // Re-attach when Explorer restarts, displays change, or settings were saved.
+                        if (!Healthy() || Settings.Revision() != revision) Attach();
+                    };
+                    timer.Start();
+                    Log("desktop clock started");
+                    Application.Run();
+                    timer.Dispose();
+                    Detach();
+                    Log("desktop clock stopped");
+                }
+            }
+            return 0;
+        }
+
+        static string Layout()
+        {
+            var sb = new StringBuilder();
+            foreach (var s in Screen.AllScreens) sb.Append(s.DeviceName).Append(s.Bounds).Append(';');
+            return sb.ToString();
+        }
+
+        static bool Healthy()
+        {
+            if (parent == IntPtr.Zero || !Native.IsWindow(parent) || Layout() != layout) return false;
+            foreach (var f in forms) if (f.IsDisposed || !Native.IsWindow(f.Handle)) return false;
+            return true;
+        }
+
+        static void Detach()
+        {
+            foreach (var f in forms) if (!f.IsDisposed) f.Close();
+            forms.Clear();
+        }
+
+        static void Attach()
+        {
+            Detach();
+            revision = Settings.Revision();
+            layout = Layout();
+            var settings = Settings.Load();
+            IntPtr insertAfter;
+            parent = FindParent(out insertAfter);
+            if (parent == IntPtr.Zero) { Log("desktop window not found"); return; }
+            foreach (var screen in Screen.AllScreens)
+            {
+                if (!settings.ShowsClockOn(screen)) continue;
+                var r = new Native.RECT { Left = screen.Bounds.Left, Top = screen.Bounds.Top, Right = screen.Bounds.Right, Bottom = screen.Bounds.Bottom };
+                Native.MapWindowPoints(IntPtr.Zero, parent, ref r, 2);
+                var f = ClockForm.CreateDesktop(settings, new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top), parent, insertAfter);
+                f.Show();
+                forms.Add(f);
+            }
+            Log("attached to " + (insertAfter != IntPtr.Zero ? "Progman (Windows 11 24H2+ layout)" : "WorkerW (classic layout)") + ", " + forms.Count + " display(s)");
+        }
+
+        // Returns the window to parent the clock to. On Windows 11 24H2+ that's Progman, with the clock placed just
+        // below the icon layer (insertAfter = SHELLDLL_DefView); on older builds it's the WorkerW behind the icons.
+        static IntPtr FindParent(out IntPtr insertAfter)
+        {
+            insertAfter = IntPtr.Zero;
+            IntPtr progman = Native.FindWindow("Progman", null);
+            if (progman == IntPtr.Zero) return IntPtr.Zero;
+            IntPtr ignored;
+            // Ask Explorer to create the wallpaper layer.
+            Native.SendMessageTimeout(progman, 0x052C, new IntPtr(0xD), new IntPtr(1), 0, 1000, out ignored);
+            Native.SendMessageTimeout(progman, 0x052C, IntPtr.Zero, IntPtr.Zero, 0, 1000, out ignored);
+            IntPtr defView = Native.FindWindowEx(progman, IntPtr.Zero, "SHELLDLL_DefView", null);
+            if (defView != IntPtr.Zero && Native.FindWindowEx(progman, IntPtr.Zero, "WorkerW", null) != IntPtr.Zero)
+            {
+                insertAfter = defView;
+                return progman;
+            }
+            IntPtr worker = IntPtr.Zero;
+            Native.EnumWindows((top, l) =>
+            {
+                if (Native.FindWindowEx(top, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero)
+                    worker = Native.FindWindowEx(IntPtr.Zero, top, "WorkerW", null);
+                return true;
+            }, IntPtr.Zero);
+            return worker;
+        }
+
+        public static bool IsRunning()
+        {
+            Mutex m;
+            if (!Mutex.TryOpenExisting(MutexName, out m)) return false;
+            m.Dispose();
+            return true;
+        }
+
+        public static void Stop()
+        {
+            EventWaitHandle quit;
+            if (!EventWaitHandle.TryOpenExisting(QuitEventName, out quit)) return;
+            using (quit) quit.Set();
+            for (int i = 0; i < 40 && IsRunning(); i++) Thread.Sleep(100);
+        }
+
+        // Starts at sign-in only while the option is on. Restarts only when asked (e.g. new files).
+        public static void Configure(bool enabled, bool restart = false)
+        {
+            using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
+            {
+                if (enabled) k.SetValue(RunValue, "\"" + Installer.ExePath + "\" /desktop");
+                else k.DeleteValue(RunValue, false);
+            }
+            if (!enabled) { Stop(); return; }
+            if (restart || !IsRunning())
+            {
+                Stop();
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Installer.ExePath, "/desktop") { UseShellExecute = false });
+            }
         }
     }
 
@@ -2385,6 +2589,15 @@ namespace LockClock
         public struct PHYSICAL_MONITOR { public IntPtr Handle; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description; }
         [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
         [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+        public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string name);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
+        [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+        [DllImport("user32.dll")] public static extern int MapWindowPoints(IntPtr from, IntPtr to, ref RECT rect, int points);
+        [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("dxva2.dll")] public static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, out uint count);
         [DllImport("dxva2.dll")] public static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, uint count, [Out] PHYSICAL_MONITOR[] monitors);
         [DllImport("dxva2.dll")] public static extern bool DestroyPhysicalMonitors(uint count, PHYSICAL_MONITOR[] monitors);
@@ -2504,8 +2717,11 @@ namespace LockClock
                 }
                 case "/agent":
                     return Agent.Run();
+                case "/desktop":
+                    return DesktopClock.Run();
                 case "/stopagent":
                     Agent.Stop();
+                    DesktopClock.Stop();
                     CloseShowingClocks();
                     return 0;
                 case "/setup-lock":
