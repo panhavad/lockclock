@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("LockClock Screensaver")]
 [assembly: System.Reflection.AssemblyProduct("LockClock")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
 [assembly: System.Reflection.AssemblyDescription("Full-screen clock screensaver with red night mode and weather")]
 
 namespace LockClock
@@ -39,6 +39,7 @@ namespace LockClock
         public int FontWeight = 2; // 0 Light, 1 Regular, 2 Bold
         public bool HardwareBrightness = true; // set the real screen brightness while the clock shows
         public bool DesktopClock = false; // live clock on the desktop background
+        public bool LockScreenEnabled = true; // master switch for everything lock-screen related
         public bool TakeOverWinL = false; // Win+L shows the clock; touching it locks
         public bool ShowWeather = true;
         public string WeatherCity = ""; // empty = detect from IP address
@@ -87,6 +88,7 @@ namespace LockClock
                 s.FontWeight = Clamp(Get(k, "FontWeight", 2), 0, 2);
                 s.HardwareBrightness = Get(k, "HardwareBrightness", 1) != 0;
                 s.DesktopClock = Get(k, "DesktopClock", 0) != 0;
+                s.LockScreenEnabled = Get(k, "LockScreenEnabled", 1) != 0;
                 s.ShowWeather = Get(k, "ShowWeather", 1) != 0;
                 s.WeatherCity = (k.GetValue("WeatherCity") as string ?? "").Trim();
                 s.Display = (k.GetValue("Display") as string ?? "all").Trim();
@@ -118,6 +120,7 @@ namespace LockClock
                 k.SetValue("WeatherUnits", WeatherUnits);
                 k.SetValue("TakeOverWinL", TakeOverWinL ? 1 : 0);
                 k.SetValue("DesktopClock", DesktopClock ? 1 : 0);
+                k.SetValue("LockScreenEnabled", LockScreenEnabled ? 1 : 0);
                 k.SetValue("Revision", Revision() + 1); // lets the desktop clock pick up changes live
             }
         }
@@ -423,6 +426,7 @@ namespace LockClock
         public bool TestMode; // full-screen test from the settings app: closes instead of exiting the app
         public bool Blank;    // black cover for a screen that doesn't show the clock
         public bool DrivesBrightness; // one clock window per process updates the hardware brightness
+        public bool DesktopLook; // preview of the desktop clock: same colors as on the desktop
         // Set by upgrades/uninstall: a showing clock closes the normal way (restores brightness, locks the PC).
         public const string QuitEventName = @"Local\LockClock.ClockQuit";
         public static EventWaitHandle QuitSignal;
@@ -713,7 +717,7 @@ namespace LockClock
             double night = NightFactor(now);
             // When the screen itself is dimmed, draw at full strength; otherwise dim the colors instead.
             // The desktop clock never changes the screen, so the sliders (screen brightness) don't dim it either.
-            bool hardware = settings.HardwareBrightness && (desktopParent != IntPtr.Zero || ScreenBrightness.Controls(Screen.FromControl(this)));
+            bool hardware = settings.HardwareBrightness && (desktopParent != IntPtr.Zero || DesktopLook || ScreenBrightness.Controls(Screen.FromControl(this)));
             Color day = Scale(Color.FromArgb(255, 245, 235), hardware ? 1.0 : settings.DayBrightness / 100.0);
             Color red = Scale(Color.FromArgb(255, 28, 10), hardware ? 1.0 : settings.NightBrightness / 100.0);
             Color main = Lerp(day, red, night);
@@ -882,15 +886,39 @@ namespace LockClock
                 CopySelf(ScrPath);
                 CopySelf(ExePath);
             }
-            SetScreensaver(timeoutMinutes, lockOnResume);
-
+            var settings = Settings.Load();
             string programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
-            CreateShortcut(Path.Combine(programs, "Lock with Clock.lnk"), ExePath, "/lock", "Ctrl+Alt+L",
-                "Show the full-screen clock; the PC locks as soon as you touch it");
+            string lockShortcut = Path.Combine(programs, "Lock with Clock.lnk");
             CreateShortcut(Path.Combine(programs, "LockClock Settings.lnk"), ExePath, "/c", "", "LockClock settings");
-            using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 1);
-            Agent.Configure(agentWasWanted, copy);
-            DesktopClock.Configure(Settings.Load().DesktopClock, copy);
+            if (settings.LockScreenEnabled)
+            {
+                SetScreensaver(timeoutMinutes, lockOnResume);
+                CreateShortcut(lockShortcut, ExePath, "/lock", "Ctrl+Alt+L", "Show the full-screen clock; the PC locks as soon as you touch it");
+                using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 1);
+                Agent.Configure(agentWasWanted, copy);
+            }
+            else
+            {
+                // Kill switch: hand the lock screen, Win+L and screensaver back to Windows.
+                using (var k = Registry.CurrentUser.CreateSubKey(@"Software\LockClock")) k.SetValue("ScreensaverWanted", 0);
+                RemoveScreensaver();
+                try { File.Delete(lockShortcut); } catch (Exception) { }
+                Agent.Configure(false);
+            }
+            DesktopClock.Configure(settings.DesktopClock, copy);
+        }
+
+        static void RemoveScreensaver()
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(DesktopKey, true))
+            {
+                var v = k == null ? null : k.GetValue("SCRNSAVE.EXE") as string;
+                if (v != null && v.IndexOf("LockClock", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    k.DeleteValue("SCRNSAVE.EXE", false);
+                    Native.SystemParametersInfo(0x0011, 0, IntPtr.Zero, Update); // no screensaver left to run
+                }
+            }
         }
 
         public static void SetScreensaver(int timeoutMinutes, bool lockOnResume)
@@ -1109,13 +1137,13 @@ namespace LockClock
             g.SmoothingMode = SmoothingMode.AntiAlias;
             float w = Fluent.Px(40), h = Fluent.Px(20);
             var track = new RectangleF(Width - w - 1, (Height - h) / 2f, w, h);
-            TextRenderer.DrawText(g, Checked ? "On" : "Off", Font, new Rectangle(0, 0, (int)track.X - Fluent.Px(12), Height), Fluent.Text,
+            TextRenderer.DrawText(g, Checked ? "On" : "Off", Font, new Rectangle(0, 0, (int)track.X - Fluent.Px(12), Height), Enabled ? Fluent.Text : Fluent.Text2,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.NoPrefix);
             using (var path = Fluent.Round(track, h / 2f))
             {
                 if (Checked)
                 {
-                    using (var br = new SolidBrush(hover ? Fluent.AccentHover : Fluent.Accent)) g.FillPath(br, path);
+                    using (var br = new SolidBrush(!Enabled ? Color.FromArgb(0xC5, 0xC5, 0xC5) : hover ? Fluent.AccentHover : Fluent.Accent)) g.FillPath(br, path);
                 }
                 else
                 {
@@ -1171,7 +1199,8 @@ namespace LockClock
             bool primary = kind == ButtonKind.Primary;
             Color back = primary ? (down ? Fluent.AccentPressed : hover ? Fluent.AccentHover : Fluent.Accent)
                                  : (down ? Fluent.Pressed : hover ? Fluent.Hover : Color.White);
-            Color fore = primary ? Color.White : Fluent.Text;
+            if (!Enabled) back = primary ? Color.FromArgb(0xC5, 0xC5, 0xC5) : Color.FromArgb(0xF5, 0xF5, 0xF5);
+            Color fore = primary ? Color.White : (Enabled ? Fluent.Text : Fluent.Text2);
             var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
             using (var path = Fluent.Round(r, Fluent.Px(4)))
             {
@@ -1292,12 +1321,12 @@ namespace LockClock
             var g = e.Graphics;
             g.Clear(Fluent.Layer);
             Fluent.DrawCard(g, ClientRectangle, Fluent.Card);
-            if (glyph != null) Fluent.DrawIcon(g, glyph, 13f, Fluent.Text, new RectangleF(Fluent.Px(16), 0, Fluent.Px(24), Height));
+            if (glyph != null) Fluent.DrawIcon(g, glyph, 13f, Enabled ? Fluent.Text : Fluent.Text2, new RectangleF(Fluent.Px(16), 0, Fluent.Px(24), Height));
             var block = TextBlock(Width);
             int y = (Height - block.Height) / 2;
             var flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
             int hh = TextRenderer.MeasureText(header, headerFont, new Size(block.Width, int.MaxValue), flags).Height;
-            TextRenderer.DrawText(g, header, headerFont, new Rectangle(TextLeft, y, block.Width, hh), Fluent.Text, flags);
+            TextRenderer.DrawText(g, header, headerFont, new Rectangle(TextLeft, y, block.Width, hh), Enabled ? Fluent.Text : Fluent.Text2, flags);
             if (!string.IsNullOrEmpty(description))
                 TextRenderer.DrawText(g, description, descFont, new Rectangle(TextLeft, y + hh + Fluent.Px(2), block.Width, block.Height - hh), Fluent.Text2, flags);
         }
@@ -1446,7 +1475,11 @@ namespace LockClock
         readonly Settings work;
         readonly float k;
         readonly ClockForm preview;
-        ToggleSwitch cb24, cbSec, cbDate, cbShift, cbLock, cbWeather, cbWinL, cbSkip, cbHardware, cbDesktop;
+        ToggleSwitch cb24, cbSec, cbDate, cbShift, cbLock, cbWeather, cbWinL, cbSkip, cbHardware, cbDesktop, cbLockFeature;
+        ClockForm desktopPreview;
+        FluentButton lockNowButton;
+        NavItem settingsItem;
+        readonly List<Control> lockOnlyCards = new List<Control>();
         ComboBox cmbMode, cmbFont, cmbPreview, cmbUnits, cmbDisplay;
         readonly List<string> displayValues = new List<string>();
         TextBox txtCity;
@@ -1514,7 +1547,6 @@ namespace LockClock
                 Dock = DockStyle.Bottom, Height = Px(36), ForeColor = Fluent.Text2, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(Px(12), 0, 0, 0),
                 Text = "LockClock " + Assembly.GetExecutingAssembly().GetName().Version.ToString(3)
             };
-            nav.Controls.Add(version);
 
             // Live preview (lives on the Overview page).
             var frame = new Panel { Size = new Size(Px(480), Px(270)), BackColor = Color.Black };
@@ -1524,15 +1556,19 @@ namespace LockClock
 
             BuildPages(frame);
 
-            // Nav items are docked top in reverse so they appear in order.
+            // Main tabs dock top (added in reverse so they appear in order); Settings sits at the bottom like PowerToys.
             for (int i = navItems.Count - 1; i >= 0; i--)
             {
                 var item = navItems[i];
-                item.Dock = DockStyle.Top;
                 item.Font = Font;
                 item.Click += (o, e) => ShowPage((NavItem)o);
+                if (item == settingsItem) continue;
+                item.Dock = DockStyle.Top;
                 nav.Controls.Add(item);
             }
+            settingsItem.Dock = DockStyle.Bottom;
+            nav.Controls.Add(settingsItem);
+            nav.Controls.Add(version);
 
             Controls.Add(layer);
             Controls.Add(nav);
@@ -1550,17 +1586,16 @@ namespace LockClock
 
         void BuildPages(Panel frame)
         {
-            // Overview
-            var page = NewPage("Overview", "\uE80F");
-            var side = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Fluent.Card };
-            side.Controls.Add(new Label { Text = "Your lock screen, as a bedside clock", AutoSize = true, Font = new Font("Segoe UI Semibold", 15f), ForeColor = Fluent.Text, Margin = new Padding(0, 0, 0, Px(8)) });
-            side.Controls.Add(new Label { Text = "A giant clock with the date and weather that turns soft red at night. Touch anything and Windows locks, straight to the password box.", AutoSize = true, MaximumSize = new Size(Px(420), 0), ForeColor = Fluent.Text2, Margin = new Padding(0, 0, 0, Px(20)) });
+            // ---- Lock screen (main tab)
+            var page = NewPage("Lock screen", "\uE72E");
+            var side = HeroSide("Your lock screen, as a bedside clock",
+                "Press Win+L or Ctrl+Alt+L, or just walk away: a giant clock with the date and weather appears, soft red at night. Touch anything and Windows locks, straight to the password box.");
             var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Fluent.Card, Margin = new Padding(0, 0, 0, Px(16)) };
-            var lockNow = new FluentButton("Lock now", ButtonKind.Primary, "\uE72E") { Margin = new Padding(0, 0, Px(8), 0) };
-            lockNow.Click += (o, e) => { saveTimer.Stop(); if (SaveNow()) { StartInstalled("/lock"); Close(); } };
+            lockNowButton = new FluentButton("Lock now", ButtonKind.Primary, "\uE72E") { Margin = new Padding(0, 0, Px(8), 0) };
+            lockNowButton.Click += (o, e) => { saveTimer.Stop(); if (SaveNow()) { StartInstalled("/lock"); Close(); } };
             var full = new FluentButton("Try full screen", ButtonKind.Secondary, "\uE740") { Margin = new Padding(0) };
             full.Click += (o, e) => ShowFullScreenTest();
-            buttons.Controls.Add(lockNow);
+            buttons.Controls.Add(lockNowButton);
             buttons.Controls.Add(full);
             side.Controls.Add(buttons);
             var previewRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Fluent.Card, Margin = new Padding(0) };
@@ -1572,69 +1607,98 @@ namespace LockClock
             previewRow.Controls.Add(cmbPreview);
             side.Controls.Add(previewRow);
             page.Controls.Add(new HeroCard(frame, side));
+            cbLockFeature = Toggle(page, "\uE72E", "Lock screen clock",
+                "Turn off to give Windows its normal lock screen, Win+L and screensaver back. Your choices are kept for when you turn it on again.", work.LockScreenEnabled);
+            cbLockFeature.CheckedChanged += (o, e) => UpdateEnabled();
             Section(page, "Shortcuts");
-            page.Controls.Add(new SettingsCard("\uE765", "Show the clock now", "Ctrl+Alt+L anywhere, or Win+L when \"Show the clock when I press Win+L\" is on.", null));
+            page.Controls.Add(new SettingsCard("\uE765", "Show the clock now", "Ctrl+Alt+L anywhere, or Win+L when \"Show the clock when I press Win+L\" is on in Settings.", null));
             page.Controls.Add(new SettingsCard("\uE72E", "Back to work", "Press any key or move the mouse: Windows locks and asks for your password.", null));
+            page.Controls.Add(OpenSettingsCard("Win+L, the screensaver timer, colors, brightness and weather are in Settings."));
 
-            // Clock
-            page = NewPage("Clock", "\uE823");
-            Section(page, "Appearance");
+            // ---- Desktop (main tab)
+            page = NewPage("Desktop", "\uE7F8");
+            var dframe = new Panel { Size = frame.Size, BackColor = Color.Black };
+            desktopPreview = ClockForm.CreateEmbedded(work);
+            desktopPreview.DesktopLook = true;
+            dframe.Controls.Add(desktopPreview);
+            desktopPreview.Show();
+            var dside = HeroSide("Your desktop, as a live clock",
+                "The same clock lives on your desktop background, behind your icons, like a live wallpaper. It follows the night schedule and never changes your screen brightness.");
+            page.Controls.Add(new HeroCard(dframe, dside));
+            cbDesktop = Toggle(page, "\uE7F8", "Live desktop clock", "Turn off to get your normal wallpaper back.", work.DesktopClock);
+            Section(page, "Good to know");
+            page.Controls.Add(new SettingsCard("\uE946", "Save battery", "Turn off \"Show seconds\" in Settings: the desktop then redraws once a minute instead of every second.", null));
+            page.Controls.Add(OpenSettingsCard("Which displays, colors, night hours and weather are in Settings."));
+
+            // ---- Settings (pinned at the bottom of the navigation)
+            page = NewPage("Settings", "\uE713", true);
+            Section(page, "Clock");
             cb24 = Toggle(page, "\uE823", "24-hour clock", "Show 21:30 instead of 9:30 PM.", work.Use24h);
             cbSec = Toggle(page, "\uE916", "Show seconds", "Small ticking seconds next to the time.", work.ShowSeconds);
             cbDate = Toggle(page, "\uE787", "Show date", "The day and date under the time.", work.ShowDate);
             cmbFont = Choice(page, "\uE8D2", "Clock weight", "How thick the digits are.", new[] { "Light", "Regular", "Bold" }, work.FontWeight);
-            Section(page, "Screen care");
             cbShift = Toggle(page, "\uE7B5", "Pixel shift", "Moves the clock slightly every minute to protect the screen from burn-in.", work.PixelShift);
 
-            // Displays
-            page = NewPage("Displays", "\uE7F4");
-            Section(page, "Multiple monitors");
+            Section(page, "Displays");
             AddDisplayChooser(page);
 
-            // Night & brightness
-            page = NewPage("Night & brightness", "\uE706");
             Section(page, "Night mode");
             cmbMode = Choice(page, "\uE708", "Red at night", "Turns the clock dim red so it doesn't light up the room.", new[] { "Automatic (schedule)", "Always day colors", "Always red" }, (int)work.Mode);
             dtStart = TimePick(page, "\uE708", "Night starts", "The clock fades to red over the 30 minutes before this.", work.NightStartMin);
             dtEnd = TimePick(page, "\uE706", "Night ends", "And back to white over the 30 minutes after this.", work.NightEndMin);
+
             Section(page, "Brightness");
             cbHardware = Toggle(page, "\uE706", "Change the screen's real brightness", "Checking your displays...", work.HardwareBrightness);
             hardwareCard = (SettingsCard)cbHardware.Parent;
-            tbDay = Slider(page, "\uE706", "Daytime brightness", "Screen brightness while the clock shows during the day.", work.DayBrightness);
-            tbNight = Slider(page, "\uE708", "Night brightness", "Screen brightness while the clock shows at night.", work.NightBrightness);
+            tbDay = Slider(page, "\uE706", "Daytime brightness", "Screen brightness while the lock screen clock shows during the day.", work.DayBrightness);
+            tbNight = Slider(page, "\uE708", "Night brightness", "Screen brightness while the lock screen clock shows at night.", work.NightBrightness);
 
-            // Weather
-            page = NewPage("Weather", "\uE9CA");
-            Section(page, "Forecast");
+            Section(page, "Weather");
             cbWeather = Toggle(page, "\uE9CA", "Show weather", "Current conditions, today's high/low and the next 3 days, from Open-Meteo.", work.ShowWeather);
             txtCity = new TextBox { Text = work.WeatherCity, Width = Px(240), BorderStyle = BorderStyle.FixedSingle, AccessibleName = "City" };
             page.Controls.Add(new SettingsCard("\uE707", "City", "Leave blank to detect your location automatically.", txtCity));
             cmbUnits = Choice(page, "\uE9CA", "Units", "Automatic uses \u00B0F only where that's the local custom.", new[] { "Automatic (by country)", "Celsius (\u00B0C)", "Fahrenheit (\u00B0F)" }, work.WeatherUnits);
 
-            // Desktop
-            page = NewPage("Desktop", "\uE7F8");
-            Section(page, "Live desktop clock");
-            cbDesktop = Toggle(page, "\uE7F8", "Show the clock on my desktop", "A live clock behind your desktop icons, with the same look, night colors and weather. Uses the displays chosen on the Displays page. It never changes your screen brightness.", work.DesktopClock);
-            page.Controls.Add(new SettingsCard("\uE946", "Tip", "Turn off \"Show seconds\" to save a little battery: the desktop then redraws once a minute.", null));
-
-            // Lock screen
-            page = NewPage("Lock screen", "\uE72E");
-            Section(page, "Win+L");
+            Section(page, "Lock screen");
             cbWinL = Toggle(page, "\uE765", "Show the clock when I press Win+L", "Instead of the Windows lock screen. Touch anything and Windows locks. Needs administrator approval once.", work.TakeOverWinL);
-            cbSkip = Toggle(page, "\uE8D7", "Skip the lock screen picture", "Go straight to the password box. Needs administrator approval.", LockControl.SkipLockScreen());
-
-            // Screensaver
-            page = NewPage("Screensaver", "\uE708");
-            Section(page, "When idle");
+            cbSkip = Toggle(page, "\uE8D7", "Skip the lock screen picture", "Go straight to the password box. A Windows-wide setting that stays as you set it, even when the lock screen clock is off. Needs administrator approval.", LockControl.SkipLockScreen());
             numWait = new NumericUpDown { Minimum = 1, Maximum = 600, Value = Installer.TimeoutMinutes(), Width = Px(110), BorderStyle = BorderStyle.FixedSingle, AccessibleName = "Start after (minutes)" };
             page.Controls.Add(new SettingsCard("\uE916", "Start after (minutes)", "How long the PC waits before the clock appears on its own.", numWait));
             cbLock = Toggle(page, "\uE72E", "Lock the PC when the clock is dismissed", "Windows asks for your password when you come back.", Installer.LockOnResume());
+            lockOnlyCards.AddRange(new Control[] { cbWinL.Parent, numWait.Parent, cbLock.Parent });
+            UpdateEnabled();
         }
 
-        VStack NewPage(string title, string glyph)
+        FlowLayoutPanel HeroSide(string title, string text)
+        {
+            var side = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Fluent.Card };
+            side.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font("Segoe UI Semibold", 15f), ForeColor = Fluent.Text, Margin = new Padding(0, 0, 0, Px(8)) });
+            side.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(Px(420), 0), ForeColor = Fluent.Text2, Margin = new Padding(0, 0, 0, Px(20)) });
+            return side;
+        }
+
+        SettingsCard OpenSettingsCard(string description)
+        {
+            var open = new FluentButton("Open Settings", ButtonKind.Secondary, "\uE713");
+            open.Size = open.GetPreferredSize(Size.Empty);
+            open.Click += (o, e) => ShowPage(settingsItem);
+            return new SettingsCard("\uE713", "More options", description, open);
+        }
+
+        // Lock-screen-only options are greyed out while the lock screen clock is off.
+        void UpdateEnabled()
+        {
+            bool on = cbLockFeature.Checked;
+            foreach (var c in lockOnlyCards) { c.Enabled = on; c.Invalidate(true); }
+            lockNowButton.Enabled = on;
+            lockNowButton.Invalidate();
+        }
+
+        VStack NewPage(string title, string glyph, bool isSettings = false)
         {
             var item = new NavItem(title, glyph);
             navItems.Add(item);
+            if (isSettings) settingsItem = item;
             var page = new VStack { Padding = new Padding(Px(40), Px(4), Px(40), Px(40)) };
             page.Controls.Add(new Label { Text = title, UseMnemonic = false, AutoSize = true, Font = new Font("Segoe UI Semibold", 21f), ForeColor = Fluent.Text, Margin = new Padding(0, 0, 0, Px(12)) });
             pages[item] = page;
@@ -1734,6 +1798,7 @@ namespace LockClock
             if (loading) return;
             ReadControls(work);
             preview.ReloadSettings();
+            desktopPreview.ReloadSettings();
             saveTimer.Stop();
             saveTimer.Start();
         }
@@ -1753,13 +1818,15 @@ namespace LockClock
 
         void ShowStatus()
         {
-            if (Installer.IsActive())
+            if (!File.Exists(Installer.ExePath))
             {
-                string how = work.TakeOverWinL ? "Win+L or Ctrl+Alt+L shows it now." : "Ctrl+Alt+L shows it now.";
-                info.Set(Tone.Success, "LockClock is on.", "Starts after " + Installer.TimeoutMinutes() + " min idle. " + how + " Changes save automatically.");
+                info.Set(Tone.Info, "Not set up yet.", "Turn on LockClock as your lock screen and desktop clock.", "Set up");
+                return;
             }
-            else
-                info.Set(Tone.Info, "Not set up yet.", "Turn on LockClock as your screensaver and lock screen clock.", "Set up");
+            string lockText = work.LockScreenEnabled ? (work.TakeOverWinL ? "on (Win+L, Ctrl+Alt+L, after " + Installer.TimeoutMinutes() + " min idle)" : "on (Ctrl+Alt+L, after " + Installer.TimeoutMinutes() + " min idle)") : "off";
+            string message = "Lock screen clock " + lockText + ".   Desktop clock " + (work.DesktopClock ? "on" : "off") + ".";
+            if (work.LockScreenEnabled || work.DesktopClock) info.Set(Tone.Success, "LockClock is running.", message);
+            else info.Set(Tone.Info, "Both clocks are off.", message);
         }
 
         bool SaveNow()
@@ -1768,8 +1835,8 @@ namespace LockClock
             {
                 ReadControls(work);
                 string lockError = null;
-                if (cbWinL.Checked != saved.TakeOverWinL || cbSkip.Checked != LockControl.SkipLockScreen())
-                    lockError = LockControl.Configure(cbWinL.Checked, cbSkip.Checked);
+                if ((work.LockScreenEnabled && cbWinL.Checked != saved.TakeOverWinL) || cbSkip.Checked != LockControl.SkipLockScreen())
+                    lockError = LockControl.Configure(work.LockScreenEnabled && cbWinL.Checked, cbSkip.Checked);
                 if (lockError != null)
                 {
                     // Keep the previous lock-screen choices if the admin prompt was declined.
@@ -1906,6 +1973,7 @@ namespace LockClock
             t.WeatherUnits = cmbUnits.SelectedIndex;
             t.TakeOverWinL = cbWinL.Checked;
             t.DesktopClock = cbDesktop.Checked;
+            t.LockScreenEnabled = cbLockFeature.Checked;
             t.Display = displayValues[cmbDisplay.SelectedIndex];
         }
     }
@@ -2428,7 +2496,8 @@ namespace LockClock
 
         public static int Run()
         {
-            if (!Settings.Load().TakeOverWinL) { LockControl.SetWinLBlocked(false); return 0; }
+            var current = Settings.Load();
+            if (!current.TakeOverWinL || !current.LockScreenEnabled) { LockControl.SetWinLBlocked(false); return 0; }
             bool first;
             using (var mutex = new Mutex(true, MutexName, out first))
             {

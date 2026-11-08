@@ -1,5 +1,5 @@
 # Builds dist\LockClock.exe (portable) and dist\LockClock.msi (per-user installer).
-param([string]$Version = '1.5.0')
+param([string]$Version = '1.6.0')
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'build.ps1')
 

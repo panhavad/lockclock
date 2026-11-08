@@ -24,15 +24,18 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 - ⛅ **Weather at a glance**: the current conditions plus today's high/low and a 3-day forecast. It finds your location automatically, or you can type a city.
 - 🖥️ **Made for always-on screens**: pure black background, gentle pixel shift against burn-in, keeps the display awake.
 - 🖥️🖥️ **Multi-monitor aware**: show the clock on all displays, only the main one, or a display you pick (with an *Identify* button). Other screens go black so nothing on them is visible.
-- 👀 **Live preview**: see every change instantly in a clean, PowerToys-style settings app (navigation pane, settings cards, toggle switches, your Windows accent color).
+- 👀 **Simple, PowerToys-style app**: two main tabs, **Lock screen** and **Desktop**, each with a live preview and an on/off switch. Every other option lives on one **Settings** page, pinned at the bottom like in PowerToys.
+- 🔌 **Kill switches**: turn the lock screen clock or the desktop clock off with one switch. Windows gets its normal lock screen, Win+L, screensaver or wallpaper back, and your choices are kept for when you turn it on again.
 - ✅ **Set up once, saves automatically**: click **Set up** the first time and LockClock configures itself. After that, every change saves automatically, just like PowerToys. No digging through Windows screensaver settings.
-- 🪶 **Tiny & dependency-free**: a single ~90 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
+- 🪶 **Tiny & dependency-free**: a single ~95 KB app built on the .NET Framework that ships with Windows. No runtime to install, no admin needed to install.
 
-| Day | Settings |
+| Day | Lock screen tab |
 |---|---|
-| ![Day colors](docs/screenshots/clock-day.png) | ![Settings app](docs/screenshots/settings.png) |
+| ![Day colors](docs/screenshots/clock-day.png) | ![Lock screen tab](docs/screenshots/settings.png) |
 
-![Night & brightness settings](docs/screenshots/settings-brightness.png)
+| Desktop tab | Settings |
+|---|---|
+| ![Desktop tab](docs/screenshots/settings-desktop.png) | ![Settings page](docs/screenshots/settings-options.png) |
 
 **On your desktop**, behind the icons:
 
@@ -43,7 +46,7 @@ Press **Win+L** and the clock appears instantly. Touch anything and Windows lock
 1. Download **[LockClock.msi](https://github.com/panhavad/lockclock/releases/latest/download/LockClock.msi)** and run it.
    It installs just for you (no admin rights), sets LockClock as your screensaver, and opens the settings app.
 2. Pick your look. Changes save automatically.
-3. Optional: on the **Lock screen** page, turn on **Show the clock when I press Win+L** and **Skip the lock screen picture**. Windows asks for administrator approval once.
+3. Optional: on the **Settings** page, under *Lock screen*, turn on **Show the clock when I press Win+L** and **Skip the lock screen picture**. Windows asks for administrator approval once. To get the live desktop clock, turn it on in the **Desktop** tab.
 
 Prefer no installer? Download the portable **[LockClock.exe](https://github.com/panhavad/lockclock/releases/latest/download/LockClock.exe)**, run it, and click **Set up**.
 
@@ -56,7 +59,7 @@ Prefer no installer? Download the portable **[LockClock.exe](https://github.com/
 | Press **Win+L** *(if enabled)* | Shows the clock instantly; touching anything locks the PC |
 | Press **Ctrl+Alt+L** | Same, from the Start Menu shortcut "Lock with Clock" |
 | Leave the PC idle | Starts as your screensaver after the wait time you chose |
-| Start Menu → **LockClock Settings** | Change the look, displays, night hours, brightness, weather and lock options |
+| Start Menu → **LockClock Settings** | Turn the lock screen or desktop clock on/off, and change the look, displays, night hours, brightness, weather and lock options |
 
 ## How it works (and what to know)
 
